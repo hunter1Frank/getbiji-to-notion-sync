@@ -29,18 +29,16 @@ def log_warning(message):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] WARNING: {message}")
 
 def getbiji_request(method, path, params=None, json=None, max_retries=3):
-    """调用 getbiji API，支持重试 - 根据官方文档修正认证方式"""
-    # 确保 path 以 / 开头
+    """调用 getbiji API，支持重试"""
     if path and not path.startswith("/"):
         path = "/" + path
     
     url = f"{GETBIJI_BASE_URL}{path}"
     log_info(f"请求 getbiji: {method} {url}")
     
-    # 根据官方文档：不需要 Bearer 前缀，直接传 API Key
     headers = {
         "X-Client-ID": GETBIJI_CLIENT_ID,
-        "Authorization": GETBIJI_API_KEY,  # 直接使用 API Key，不需要 "Bearer " 前缀
+        "Authorization": GETBIJI_API_KEY,
         "Content-Type": "application/json"
     }
     
@@ -62,8 +60,7 @@ def getbiji_request(method, path, params=None, json=None, max_retries=3):
             
             ct = (r.headers.get("content-type") or "").lower()
             if "application/json" in ct:
-                response_data = r.json()
-                return response_data
+                return r.json()
             else:
                 return {"raw": r.text}
                 
@@ -83,67 +80,51 @@ def notion_headers():
         "Notion-Version": "2022-06-28",
     }
 
-def test_notion_connection():
-    """测试 Notion 连接和数据库访问"""
-    log_info("测试 Notion 连接...")
-    
-    # 测试1：验证 Token
-    log_info("测试 Notion Token 有效性...")
-    url = "https://api.notion.com/v1/users/me"
+def get_notion_database_properties():
+    """获取数据库的属性和结构"""
     try:
+        url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}"
         response = requests.get(url, headers=notion_headers(), timeout=30)
-        if response.status_code == 200:
-            user_data = response.json()
-            log_info(f"✅ Notion Token 有效，用户: {user_data.get('name', '未知')}")
-        else:
-            log_error(f"❌ Notion Token 无效 ({response.status_code}): {response.text[:200]}")
-            return False
-    except Exception as e:
-        log_error(f"❌ Notion Token 测试失败: {str(e)}")
-        return False
-    
-    # 测试2：验证数据库访问权限
-    log_info(f"测试 Notion 数据库访问 (ID: {NOTION_DATABASE_ID[:8]}...)")
-    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}"
-    try:
-        response = requests.get(url, headers=notion_headers(), timeout=30)
+        
         if response.status_code == 200:
             db_data = response.json()
-            db_title = "无标题"
-            if "title" in db_data and db_data["title"]:
-                if isinstance(db_data["title"], list) and db_data["title"]:
-                    db_title = db_data["title"][0].get("plain_text", "无标题")
-            log_info(f"✅ Notion 数据库连接成功: {db_title}")
-            log_info(f"数据库属性: {list(db_data.get('properties', {}).keys())}")
-            return True
-        elif response.status_code == 404:
-            log_error("❌ Notion 数据库 404 错误: 数据库不存在或集成没有权限访问")
-            log_error("请检查:")
-            log_error("1. 数据库ID是否正确")
-            log_error("2. 在Notion中，数据库是否已与集成共享")
-            log_error("3. 在 https://www.notion.so/my-integrations 中查看集成权限")
-            return False
-        elif response.status_code == 403:
-            log_error("❌ Notion 数据库 403 错误: 权限不足")
-            log_error("请在Notion中邀请集成访问数据库:")
-            log_error("1. 打开数据库页面")
-            log_error("2. 点击右上角 Share")
-            log_error("3. 在 'Add people, emails, or groups' 中输入您的集成名称")
-            return False
+            properties = db_data.get("properties", {})
+            
+            # 查找标题属性
+            title_property = None
+            for prop_name, prop_data in properties.items():
+                if prop_data.get("type") == "title":
+                    title_property = prop_name
+                    break
+            
+            log_info(f"数据库标题: {title_property or '未找到'}")
+            log_info(f"数据库所有属性: {list(properties.keys())}")
+            
+            return {
+                "properties": properties,
+                "title_property": title_property
+            }
         else:
-            log_error(f"❌ Notion 数据库访问失败 ({response.status_code}): {response.text[:200]}")
-            return False
+            log_error(f"获取数据库结构失败 ({response.status_code}): {response.text[:200]}")
+            return None
     except Exception as e:
-        log_error(f"❌ Notion 数据库连接测试失败: {str(e)}")
-        return False
+        log_error(f"获取数据库结构异常: {str(e)}")
+        return None
 
-def notion_query_by_noteid(noteid):
+def notion_query_by_noteid(noteid, db_info):
     """查询 Notion 数据库中是否已存在该笔记"""
     if not noteid or not NOTION_DATABASE_ID:
         return None
     
+    # 检查数据库中是否有 NoteID 属性
+    properties = db_info.get("properties", {})
+    if "NoteID" not in properties:
+        log_warning("数据库中没有 NoteID 属性，跳过去重检查")
+        return None
+    
     try:
         url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
+        
         payload = {
             "filter": {
                 "property": "NoteID",
@@ -158,9 +139,6 @@ def notion_query_by_noteid(noteid):
             if results:
                 log_info(f"找到已存在的页面: {results[0]['id'][:8]}...")
             return results[0]["id"] if results else None
-        elif response.status_code == 404:
-            log_error(f"查询 Notion 失败: 数据库不存在 (404)")
-            return None
         else:
             log_error(f"查询 Notion 失败 ({response.status_code}): {response.text[:200]}")
             return None
@@ -169,39 +147,47 @@ def notion_query_by_noteid(noteid):
         log_error(f"查询 Notion 异常: {str(e)}")
         return None
 
-def notion_create_page(note):
+def notion_create_page(note, db_info):
     """在 Notion 中创建新页面"""
     try:
-        # 构建 Notion 页面属性
+        properties = db_info.get("properties", {})
+        title_property = db_info.get("title_property", "名称")  # 默认使用"名称"
+        
+        # 准备属性
         props = {}
         
-        # 标题
+        # 1. 标题属性
         title = note.get("title") or note.get("name") or "无标题"
         if not isinstance(title, str):
             title = str(title)
-        props["Name"] = {"title": [{"text": {"content": title[:200]}}]}
         
-        # NoteID（用于去重）
+        if title_property and title_property in properties:
+            props[title_property] = {"title": [{"text": {"content": title[:200]}}]}
+        else:
+            log_error(f"标题属性 '{title_property}' 不存在于数据库中")
+            return None
+        
+        # 2. NoteID 属性
         noteid = str(note.get("id") or note.get("note_id") or note.get("noteId") or "")
-        if noteid:
+        if noteid and "NoteID" in properties:
             props["NoteID"] = {"rich_text": [{"text": {"content": noteid[:200]}}]}
         
-        # 创建时间
+        # 3. 创建时间属性
         created = note.get("created_at") or note.get("createdAt") or note.get("created_time")
-        if created:
+        if created and "CreatedAt" in properties:
             props["CreatedAt"] = {"date": {"start": created}}
         
-        # 更新时间
+        # 4. 更新时间属性
         updated = note.get("updated_at") or note.get("updatedAt") or note.get("updated_time")
-        if updated:
+        if updated and "UpdatedAt" in properties:
             props["UpdatedAt"] = {"date": {"start": updated}}
         
-        # 构建简单的页面内容
+        # 构建页面内容
         content = note.get("content") or ""
         children = []
         if content:
             # 将内容分割为多个段落
-            content_chunks = [content[i:i+2000] for i in range(0, min(len(content), 10000), 2000)]
+            content_chunks = [content[i:i+2000] for i in range(0, min(len(content), 6000), 2000)]
             for chunk in content_chunks[:3]:  # 限制最多3个段落
                 children.append({
                     "object": "block",
@@ -224,20 +210,19 @@ def notion_create_page(note):
             payload["children"] = children
         
         log_info(f"创建 Notion 页面: {title[:50]}...")
+        log_info(f"使用的属性: {list(props.keys())}")
         
         response = requests.post(url, headers=notion_headers(), json=payload, timeout=30)
         
         if response.status_code == 200:
-            page_id = response.json().get("id")
-            page_url = response.json().get("url", "")
+            page_data = response.json()
+            page_id = page_data.get("id")
+            page_url = page_data.get("url", "")
             log_info(f"✅ 成功创建 Notion 页面")
             log_info(f"   页面ID: {page_id[:8]}...")
             if page_url:
                 log_info(f"   页面URL: {page_url}")
             return page_id
-        elif response.status_code == 404:
-            log_error(f"创建 Notion 页面失败: 数据库不存在 (404)")
-            return None
         else:
             log_error(f"创建 Notion 页面失败 ({response.status_code}): {response.text[:200]}")
             return None
@@ -245,41 +230,6 @@ def notion_create_page(note):
     except Exception as e:
         log_error(f"创建 Notion 页面异常: {str(e)}")
         return None
-
-def notion_update_page(page_id, note):
-    """更新 Notion 页面"""
-    try:
-        # 构建更新属性
-        props = {}
-        
-        # 标题
-        title = note.get("title") or note.get("name") or "无标题"
-        if not isinstance(title, str):
-            title = str(title)
-        props["Name"] = {"title": [{"text": {"content": title[:200]}}]}
-        
-        # 更新时间
-        updated = note.get("updated_at") or note.get("updatedAt") or note.get("updated_time")
-        if updated:
-            props["UpdatedAt"] = {"date": {"start": updated}}
-        
-        url = f"https://api.notion.com/v1/pages/{page_id}"
-        payload = {"properties": props}
-        
-        log_info(f"更新 Notion 页面: {page_id[:8]}...")
-        
-        response = requests.patch(url, headers=notion_headers(), json=payload, timeout=30)
-        
-        if response.status_code == 200:
-            log_info(f"✅ 成功更新 Notion 页面: {page_id[:8]}...")
-            return True
-        else:
-            log_error(f"更新 Notion 页面失败 ({response.status_code}): {response.text[:200]}")
-            return False
-        
-    except Exception as e:
-        log_error(f"更新 Notion 页面异常: {str(e)}")
-        return False
 
 def main():
     """主函数"""
@@ -308,9 +258,10 @@ def main():
         log_error(f"缺少必要的环境变量: {', '.join(missing_vars)}")
         sys.exit(1)
     
-    # 测试 Notion 连接
-    if not test_notion_connection():
-        log_error("Notion 连接测试失败，同步终止")
+    # 获取数据库结构
+    db_info = get_notion_database_properties()
+    if not db_info:
+        log_error("无法获取数据库结构，同步终止")
         sys.exit(1)
     
     try:
@@ -349,10 +300,10 @@ def main():
         
         log_info(f"获取到 {len(notes)} 条笔记")
         
-        # 只同步前3条进行测试
+        # 只同步前2条进行测试
         synced = 0
         failed = 0
-        for i, note in enumerate(notes[:3]):
+        for i, note in enumerate(notes[:2]):
             try:
                 start_time = time.time()
                 note_id = note.get('id', 'unknown')
@@ -360,22 +311,16 @@ def main():
                 log_info(f"【开始处理】第 {i+1} 条笔记 (ID: {note_id}, 标题: {note_title}...)")
                 
                 # 检查是否已存在
-                existing_page_id = notion_query_by_noteid(str(note_id))
-                time.sleep(0.3)  # 小延迟
+                existing_page_id = notion_query_by_noteid(str(note_id), db_info)
+                time.sleep(0.3)
                 
                 if existing_page_id:
-                    # 更新现有页面
-                    log_info(f"笔记已存在，尝试更新: {note_id}")
-                    if notion_update_page(existing_page_id, note):
-                        synced += 1
-                        log_info(f"✓ 更新成功: {note_title}...")
-                    else:
-                        failed += 1
-                        log_error(f"✗ 更新失败: {note_title}...")
+                    log_info(f"笔记已存在，跳过: {note_id}")
+                    synced += 1
                 else:
                     # 创建新页面
                     log_info(f"创建新笔记: {note_id}")
-                    if notion_create_page(note):
+                    if notion_create_page(note, db_info):
                         synced += 1
                         log_info(f"✓ 创建成功: {note_title}...")
                     else:
@@ -396,7 +341,7 @@ def main():
         
         log_info("=" * 50)
         log_info(f"同步完成!")
-        log_info(f"成功: {synced} 条，失败: {failed} 条，总计: {len(notes[:3])} 条")
+        log_info(f"成功: {synced} 条，失败: {failed} 条，总计: {len(notes[:2])} 条")
         log_info(f"结束时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         log_info("=" * 50)
         
