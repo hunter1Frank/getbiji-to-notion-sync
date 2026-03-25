@@ -3,27 +3,31 @@ name: Sync Getbiji to Notion
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"  # 每6小时运行一次
+    - cron: "0 */6 * * *"
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
+        
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
+          
       - name: Install dependencies
         run: pip install requests
-
+        
       - name: Run sync
         env:
           GETBIJI_API_KEY: ${{ secrets.GETBIJI_API_KEY }}
+          GETBIJI_CLIENT_ID: ${{ secrets.GETBIJI_CLIENT_ID }}
           GETBIJI_BASE_URL: ${{ secrets.GETBIJI_BASE_URL }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-        run: python sync.py  # 请确保这里的脚本文件名与您仓库中的实际文件名一致
+        run: python sync.py
