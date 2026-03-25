@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+"""
+同步 Getbiji 笔记到 Notion 数据库
+在 GitHub Actions 中运行
+"""
+
 import os
 import time
 import requests
@@ -6,6 +12,7 @@ from datetime import datetime
 
 # 环境变量
 GETBIJI_API_KEY = os.environ.get("GETBIJI_API_KEY", "").strip()
+GETBIJI_CLIENT_ID = os.environ.get("GETBIJI_CLIENT_ID", "").strip()
 GETBIJI_BASE_URL = os.environ.get("GETBIJI_BASE_URL", "").rstrip("/")
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "").strip()
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "").strip()
@@ -22,42 +29,50 @@ def log_warning(message):
 
 def getbiji_request(method, path, params=None, json=None, max_retries=3):
     """调用 getbiji API，支持重试"""
-    url = f"{GETBIJI_BASE_URL}{path}"
+    # 确保路径以斜杠开头
+    if not path.startswith("/"):
+        path = "/" + path
     
-    # 尝试不同的认证头
-    header_candidates = [
-        {"Authorization": f"Bearer {GETBIJI_API_KEY}"},
-        {"Authorization": GETBIJI_API_KEY},
-        {"X-API-Key": GETBIJI_API_KEY},
-        {"x-api-key": GETBIJI_API_KEY},
-    ]
+    url = f"{GETBIJI_BASE_URL}{path}"
+    log_info(f"请求 getbiji: {method} {url}")
+    
+    # 根据官方文档，使用正确的认证头
+    headers = {
+        "X-Client-ID": GETBIJI_CLIENT_ID,
+        "Authorization": GETBIJI_API_KEY,
+        "Content-Type": "application/json"
+    }
     
     for attempt in range(max_retries):
-        for headers in header_candidates:
-            try:
-                log_info(f"尝试 getbiji 请求: {method} {url} (尝试 {attempt + 1}/{max_retries})")
-                r = requests.request(method, url, headers=headers, params=params, json=json, timeout=30)
+        try:
+            r = requests.request(method, url, headers=headers, params=params, json=json, timeout=30)
+            log_info(f"响应状态码: {r.status_code}")
+            
+            if r.status_code == 401:
+                log_error(f"认证失败 (401)，请检查 X-Client-ID 和 Authorization 是否正确")
+                try:
+                    error_data = r.json()
+                    log_error(f"错误详情: {error_data}")
+                except:
+                    log_error(f"响应内容: {r.text[:200]}")
+                break
+            
+            r.raise_for_status()
+            
+            ct = (r.headers.get("content-type") or "").lower()
+            if "application/json" in ct:
+                return r.json()
+            else:
+                return {"raw": r.text}
                 
-                if r.status_code in (401, 403):
-                    log_warning(f"认证失败，状态码: {r.status_code}, 头: {list(headers.keys())[0]}")
-                    continue
-                
-                r.raise_for_status()
-                
-                ct = (r.headers.get("content-type") or "").lower()
-                if "application/json" in ct:
-                    return r.json()
-                else:
-                    return {"raw": r.text}
-                    
-            except requests.exceptions.RequestException as e:
-                log_warning(f"请求失败: {str(e)}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)  # 指数退避
-                else:
-                    raise
+        except requests.exceptions.RequestException as e:
+            log_warning(f"请求失败: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                raise
     
-    raise RuntimeError(f"Getbiji 认证失败，已尝试所有认证方式")
+    raise RuntimeError(f"Getbiji API 调用失败")
 
 def notion_headers():
     return {
@@ -103,7 +118,7 @@ def notion_create_page(props):
         r.raise_for_status()
         
         page_id = r.json().get("id")
-        log_info(f"成功创建 Notion 页面: {page_id}")
+        log_info(f"成功创建 Notion 页面: {page_id[:8]}...")
         return page_id
         
     except Exception as e:
@@ -119,7 +134,7 @@ def notion_update_page(page_id, props):
         r = requests.patch(url, headers=notion_headers(), json=payload, timeout=30)
         r.raise_for_status()
         
-        log_info(f"成功更新 Notion 页面: {page_id}")
+        log_info(f"成功更新 Notion 页面: {page_id[:8]}...")
         return True
         
     except Exception as e:
@@ -163,17 +178,35 @@ def to_notion_props(note):
     
     # 添加标签
     if isinstance(tags, list) and tags:
-        props["Tags"] = {"multi_select": [{"name": str(t)[:100]} for t in tags[:10]]}  # 限制最多10个标签
+        props["Tags"] = {"multi_select": [{"name": str(t)[:100]} for t in tags[:10]]}
     
     return noteid, props
 
 def main():
     """主函数"""
+    log_info("=" * 50)
     log_info("开始同步 get笔记 到 Notion")
+    log_info(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log_info("=" * 50)
     
-    # 验证环境变量
-    if not all([GETBIJI_API_KEY, GETBIJI_BASE_URL, NOTION_TOKEN, NOTION_DATABASE_ID]):
-        log_error("缺少必要的环境变量")
+    # 验证所有必要的环境变量
+    required_vars = {
+        "GETBIJI_API_KEY": (GETBIJI_API_KEY, 10),
+        "GETBIJI_CLIENT_ID": (GETBIJI_CLIENT_ID, 10),
+        "GETBIJI_BASE_URL": (GETBIJI_BASE_URL, 30),
+        "NOTION_TOKEN": (NOTION_TOKEN, 10),
+        "NOTION_DATABASE_ID": (NOTION_DATABASE_ID, 8)
+    }
+    
+    missing_vars = []
+    for var_name, (var_value, preview_len) in required_vars.items():
+        if not var_value:
+            missing_vars.append(var_name)
+        else:
+            log_info(f"{var_name}: {var_value[:preview_len]}...")
+    
+    if missing_vars:
+        log_error(f"缺少必要的环境变量: {', '.join(missing_vars)}")
         sys.exit(1)
     
     try:
@@ -194,7 +227,8 @@ def main():
         synced = 0
         for i, note in enumerate(notes[:20]):
             try:
-                log_info(f"处理第 {i+1} 条笔记...")
+                start_time = time.time()
+                log_info(f"【开始处理】第 {i+1} 条笔记 (ID: {note.get('id', 'unknown')})")
                 
                 noteid, props = to_notion_props(note)
                 if not noteid:
@@ -203,7 +237,7 @@ def main():
                 
                 # 检查是否已存在
                 existing_page_id = notion_query_by_noteid(noteid)
-                time.sleep(0.1)  # 小延迟
+                time.sleep(0.1)
                 
                 if existing_page_id:
                     # 更新现有页面
@@ -216,14 +250,20 @@ def main():
                         synced += 1
                         log_info(f"✓ 创建笔记: {noteid[:20]}...")
                 
+                end_time = time.time()
+                log_info(f"【完成处理】第 {i+1} 条笔记，耗时: {end_time - start_time:.2f}秒")
+                
                 # 避免速率限制
-                time.sleep(0.4)
+                time.sleep(0.3)
                 
             except Exception as e:
                 log_error(f"处理第 {i+1} 条笔记失败: {str(e)}")
                 continue
         
+        log_info("=" * 50)
         log_info(f"同步完成! 成功处理 {synced} 条笔记")
+        log_info(f"结束时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        log_info("=" * 50)
         
     except Exception as e:
         log_error(f"同步过程失败: {str(e)}")
