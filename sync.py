@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-同步 Getbiji 笔记到 Notion 数据库 - 根据note_type同步原文链接
+同步 Getbiji 笔记到 Notion 数据库 - 增强版（尝试获取原文链接）
 在 GitHub Actions 中运行
 """
 
@@ -73,6 +73,54 @@ def getbiji_request(method, path, params=None, json=None, max_retries=3):
                 raise
     
     raise RuntimeError(f"Getbiji API 调用失败")
+
+def get_note_detail(note_id):
+    """获取单条笔记详情，尝试获取原文链接"""
+    try:
+        # 尝试调用获取笔记详情的API
+        # 根据常见的API设计，可能是 /resource/note/{id} 或 /resource/note/detail
+        endpoints_to_try = [
+            f"/resource/note/{note_id}",
+            f"/resource/note/detail?id={note_id}",
+            f"/resource/note/get?id={note_id}",
+        ]
+        
+        for endpoint in endpoints_to_try:
+            try:
+                log_info(f"尝试获取笔记详情: {endpoint}")
+                data = getbiji_request("GET", endpoint)
+                
+                if data and isinstance(data, dict):
+                    # 检查返回的数据结构
+                    if "data" in data and isinstance(data["data"], dict):
+                        note_detail = data["data"]
+                        # 查找link_url或其他URL字段
+                        for url_field in ["link_url", "url", "source_url", "original_url"]:
+                            if url_field in note_detail and note_detail[url_field]:
+                                url = note_detail[url_field]
+                                if url.startswith(("http://", "https://")):
+                                    log_info(f"从详情接口获取到原文链接: {url[:100]}...")
+                                    return url
+                    
+                    # 如果直接返回笔记对象
+                    for url_field in ["link_url", "url", "source_url", "original_url"]:
+                        if url_field in data and data[url_field]:
+                            url = data[url_field]
+                            if url.startswith(("http://", "https://")):
+                                log_info(f"从详情接口获取到原文链接: {url[:100]}...")
+                                return url
+                
+                time.sleep(0.1)  # 短暂延迟
+                
+            except Exception as e:
+                log_warning(f"尝试接口 {endpoint} 失败: {str(e)[:100]}")
+                continue
+        
+        return None
+        
+    except Exception as e:
+        log_warning(f"获取笔记详情失败: {str(e)}")
+        return None
 
 def get_all_notes():
     """获取所有笔记（支持分页）"""
@@ -278,29 +326,30 @@ def notion_create_page(note, db_info):
                 
                 log_info(f"提取到 {len(tag_names)} 个标签: {', '.join(tag_names[:5])}{'...' if len(tag_names) > 5 else ''}")
         
-        # 原文链接处理 - 根据API文档，只有link类型笔记才有link_url
-        note_type = note.get("note_type", "plain_text")
-        log_info(f"笔记类型: {note_type}")
-        
+        # 原文链接处理
         source_url = None
         
-        if note_type == "link":
-            # 链接类型笔记，尝试获取link_url
-            source_url = note.get("link_url")
-            if source_url:
-                log_info(f"链接类型笔记，找到link_url: {source_url[:100] if len(source_url) > 100 else source_url}")
-            else:
-                log_warning("链接类型笔记，但未找到link_url字段")
+        # 1. 首先从列表数据中查找
+        for url_field in ["link_url", "url", "source_url", "original_url"]:
+            if url_field in note and note[url_field]:
+                url = note[url_field]
+                if isinstance(url, str) and url.startswith(("http://", "https://")):
+                    source_url = url
+                    log_info(f"从列表数据获取到原文链接: {url[:100]}...")
+                    break
         
-        # 即使不是link类型，也检查其他可能的URL字段
-        if not source_url:
-            url_fields_to_check = ["url", "source_url", "source", "original_url", "web_url"]
-            for field_name in url_fields_to_check:
-                if field_name in note:
-                    source_url = note.get(field_name)
-                    if source_url:
-                        log_info(f"从字段 '{field_name}' 获取链接: {source_url[:100] if len(source_url) > 100 else source_url}")
-                        break
+        # 2. 如果没有找到，尝试获取笔记详情
+        if not source_url and note.get("note_type") == "link":
+            note_id = note.get("id")
+            if note_id:
+                source_url = get_note_detail(note_id)
+        
+        # 3. 处理source字段（web/app标识）
+        if not source_url and "source" in note:
+            source_value = note["source"]
+            if source_value in ["web", "app"]:
+                log_info(f"笔记来源: {source_value} (非实际URL)")
+                # 这里不设置URL，因为不是真正的链接
         
         if source_url:
             url_property_name = None
@@ -315,7 +364,7 @@ def notion_create_page(note, db_info):
             else:
                 log_warning("数据库中没有找到合适的URL属性")
         else:
-            log_info(f"笔记类型为 {note_type}，无原文链接")
+            log_info("未找到原文链接")
         
         # 构建页面内容
         content = note.get("content") or ""
@@ -373,7 +422,7 @@ def notion_create_page(note, db_info):
 def main():
     """主函数"""
     log_info("=" * 50)
-    log_info("开始同步 get笔记 到 Notion（根据note_type同步原文链接）")
+    log_info("开始同步 get笔记 到 Notion（增强版，尝试获取原文链接）")
     log_info(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log_info("=" * 50)
     
@@ -411,36 +460,24 @@ def main():
         
         log_info(f"总共获取到 {len(all_notes)} 条笔记")
         
-        # 统计笔记类型分布
+        # 统计笔记类型
         note_types = {}
         for note in all_notes:
             note_type = note.get("note_type", "plain_text")
             note_types[note_type] = note_types.get(note_type, 0) + 1
-        
         log_info(f"笔记类型统计: {note_types}")
         
-        # 只测试前5条不同类型的笔记
-        test_notes = []
-        seen_types = set()
-        for note in all_notes:
-            note_type = note.get("note_type", "plain_text")
-            if note_type not in seen_types or len(test_notes) < 5:
-                test_notes.append(note)
-                seen_types.add(note_type)
-            if len(test_notes) >= 5:
-                break
-        
+        # 同步所有笔记（移除测试限制）
         synced = 0
         failed = 0
         skipped = 0
         
-        for i, note in enumerate(test_notes):
+        for i, note in enumerate(all_notes):
             try:
                 start_time = time.time()
                 note_id = note.get('id', 'unknown')
                 note_title = note.get('title', '无标题')[:50]
-                note_type = note.get("note_type", "plain_text")
-                log_info(f"【开始处理】第 {i+1}/{len(test_notes)} 条笔记 (ID: {note_id}, 类型: {note_type}, 标题: {note_title}...)")
+                log_info(f"【开始处理】第 {i+1}/{len(all_notes)} 条笔记 (ID: {note_id}, 标题: {note_title}...)")
                 
                 existing_page_id = notion_query_by_noteid(str(note_id), db_info)
                 time.sleep(0.3)
@@ -470,9 +507,7 @@ def main():
         
         log_info("=" * 50)
         log_info(f"同步完成!")
-        log_info(f"获取到: {len(all_notes)} 条笔记（总共）")
-        log_info(f"笔记类型统计: {note_types}")
-        log_info(f"测试同步: {len(test_notes)} 条笔记")
+        log_info(f"总计: {len(all_notes)} 条笔记")
         log_info(f"成功创建: {synced} 条")
         log_info(f"已存在跳过: {skipped} 条")
         log_info(f"失败: {failed} 条")
