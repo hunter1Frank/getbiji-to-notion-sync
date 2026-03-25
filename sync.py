@@ -62,7 +62,9 @@ def getbiji_request(method, path, params=None, json=None, max_retries=3):
             
             ct = (r.headers.get("content-type") or "").lower()
             if "application/json" in ct:
-                return r.json()
+                response_data = r.json()
+                log_info(f"API响应结构: {list(response_data.keys())}")
+                return response_data
             else:
                 return {"raw": r.text}
                 
@@ -187,7 +189,16 @@ def to_notion_props(note):
     
     # 添加标签
     if isinstance(tags, list) and tags:
-        props["Tags"] = {"multi_select": [{"name": str(t)[:100]} for t in tags[:10]]}
+        # 处理标签格式：从日志看标签是字典列表，如 [{'id': '463996055', 'name': 'AI链接笔记', 'type': 'system'}, ...]
+        tag_names = []
+        for tag in tags[:10]:  # 限制最多10个标签
+            if isinstance(tag, dict) and "name" in tag:
+                tag_names.append(str(tag["name"])[:100])
+            elif isinstance(tag, str):
+                tag_names.append(tag[:100])
+        
+        if tag_names:
+            props["Tags"] = {"multi_select": [{"name": name} for name in tag_names]}
     
     return noteid, props
 
@@ -222,10 +233,27 @@ def main():
         # 获取 getbiji 笔记列表
         log_info("正在从 getbiji 获取笔记...")
         data = getbiji_request("GET", "/resource/note/list")
-        log_info(f"API 响应: {data}")
         
-        # 提取笔记列表
-        notes = data.get("data") or data.get("list") or data.get("notes") or []
+        # 检查API响应数据结构
+        if not data or not isinstance(data, dict):
+            log_error(f"API响应格式异常: {type(data)}")
+            sys.exit(1)
+        
+        # 从返回的日志可以看到，数据结构是: data['data']['notes']
+        # 所以我们需要先获取 'data' 键，然后获取 'notes' 键
+        if "data" in data and isinstance(data["data"], dict):
+            if "notes" in data["data"]:
+                notes = data["data"]["notes"]
+            else:
+                log_error(f"API响应中没有找到 notes 键，可用键: {list(data['data'].keys())}")
+                notes = []
+        else:
+            # 尝试其他可能的键
+            notes = data.get("data") or data.get("list") or data.get("notes") or []
+        
+        if not isinstance(notes, list):
+            log_error(f"笔记数据不是列表类型: {type(notes)}")
+            sys.exit(1)
         
         if not notes:
             log_warning("未获取到任何笔记")
@@ -235,7 +263,8 @@ def main():
         
         # 打印第一条笔记的结构用于调试
         if notes:
-            log_info(f"第一条笔记结构: {notes[0]}")
+            log_info(f"第一条笔记ID: {notes[0].get('id', 'unknown')}")
+            log_info(f"第一条笔记标题: {notes[0].get('title', '无标题')}")
         
         # 同步前20条（避免限流）
         synced = 0
@@ -244,7 +273,6 @@ def main():
                 start_time = time.time()
                 note_id = note.get('id', 'unknown')
                 log_info(f"【开始处理】第 {i+1} 条笔记 (ID: {note_id})")
-                log_info(f"笔记数据: {note}")
                 
                 noteid, props = to_notion_props(note)
                 if not noteid:
