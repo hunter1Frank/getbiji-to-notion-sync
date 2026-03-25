@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-同步 Getbiji 笔记到 Notion 数据库 - 完整功能版
+同步 Getbiji 笔记到 Notion 数据库 - 完整生产版
 在 GitHub Actions 中运行
 """
 
@@ -76,7 +76,7 @@ def getbiji_request(method, path, params=None, json=None, max_retries=3):
 def get_all_notes():
     """获取所有笔记（支持分页）"""
     all_notes = []
-    next_cursor = 0  # 首次请求使用 0
+    next_cursor = 0
     page_count = 0
     
     while True:
@@ -84,7 +84,6 @@ def get_all_notes():
         log_info(f"正在获取第 {page_count} 页笔记，游标: {next_cursor}")
         
         try:
-            # 使用正确的 API 路径：/resource/note/list
             params = {"since_id": next_cursor}
             data = getbiji_request("GET", "/resource/note/list", params=params)
             
@@ -92,7 +91,6 @@ def get_all_notes():
                 log_error(f"API响应格式异常: {type(data)}")
                 break
             
-            # 提取当前页的笔记
             notes = []
             if "data" in data and isinstance(data["data"], dict):
                 if "notes" in data["data"]:
@@ -101,7 +99,6 @@ def get_all_notes():
                 else:
                     log_warning(f"data['data'] 中没有 notes 键，尝试其他键")
             else:
-                # 尝试其他可能的键
                 notes = data.get("data") or data.get("list") or data.get("notes") or []
                 log_info(f"从其他键找到 {len(notes)} 条笔记")
             
@@ -109,14 +106,11 @@ def get_all_notes():
                 log_error(f"笔记数据不是列表类型: {type(notes)}")
                 break
             
-            # 添加到总列表
             all_notes.extend(notes)
             
-            # 检查是否有更多数据
             has_more = False
             next_cursor_value = None
             
-            # 从响应中提取分页信息
             if "data" in data and isinstance(data["data"], dict):
                 has_more = data["data"].get("has_more", False)
                 next_cursor_value = data["data"].get("next_cursor")
@@ -130,7 +124,6 @@ def get_all_notes():
                 log_info(f"已获取所有笔记，共 {len(all_notes)} 条")
                 break
             
-            # 更新游标，继续获取下一页
             try:
                 next_cursor = int(next_cursor_value)
                 if next_cursor <= 0:
@@ -140,7 +133,6 @@ def get_all_notes():
                 log_warning(f"无法解析游标值: {next_cursor_value}")
                 break
             
-            # 避免请求过快
             time.sleep(0.5)
             
         except Exception as e:
@@ -166,7 +158,6 @@ def get_notion_database_properties():
             db_data = response.json()
             properties = db_data.get("properties", {})
             
-            # 查找标题属性
             title_property = None
             for prop_name, prop_data in properties.items():
                 if prop_data.get("type") == "title":
@@ -192,7 +183,6 @@ def notion_query_by_noteid(noteid, db_info):
     if not noteid or not NOTION_DATABASE_ID:
         return None
     
-    # 检查数据库中是否有 NoteID 属性
     properties = db_info.get("properties", {})
     if "NoteID" not in properties:
         log_warning("数据库中没有 NoteID 属性，跳过去重检查")
@@ -229,10 +219,8 @@ def notion_create_page(note, db_info):
         properties = db_info.get("properties", {})
         title_property = db_info.get("title_property", "名称")
         
-        # 准备属性
         props = {}
         
-        # 1. 标题属性
         title = note.get("title") or note.get("name") or "无标题"
         if not isinstance(title, str):
             title = str(title)
@@ -243,25 +231,20 @@ def notion_create_page(note, db_info):
             log_error(f"标题属性 '{title_property}' 不存在于数据库中")
             return None
         
-        # 2. NoteID 属性
         noteid = str(note.get("id") or note.get("note_id") or note.get("noteId") or "")
         if noteid and "NoteID" in properties:
             props["NoteID"] = {"rich_text": [{"text": {"content": noteid[:200]}}]}
         
-        # 3. 创建时间属性
         created = note.get("created_at") or note.get("createdAt") or note.get("created_time")
         if created and "CreatedAt" in properties:
             props["CreatedAt"] = {"date": {"start": created}}
         
-        # 4. 更新时间属性
         updated = note.get("updated_at") or note.get("updatedAt") or note.get("updated_time")
         if updated and "UpdatedAt" in properties:
             props["UpdatedAt"] = {"date": {"start": updated}}
         
-        # 5. 标签属性（支持多种可能的属性名）
+        # 标签处理
         tags = note.get("tags") or []
-        
-        # 检查 Notion 数据库中是否有标签相关的属性
         tag_property_name = None
         for prop_name in ["Tags", "标签", "Tag", "categories"]:
             if prop_name in properties:
@@ -279,30 +262,24 @@ def notion_create_page(note, db_info):
                     tag_names.append(tag)
             
             if tag_names:
-                # 限制标签数量，避免Notion API限制
                 max_tags = 10
                 if len(tag_names) > max_tags:
                     log_warning(f"笔记有 {len(tag_names)} 个标签，只取前 {max_tags} 个")
                     tag_names = tag_names[:max_tags]
                 
-                # 根据属性类型设置不同的格式
                 prop_type = properties[tag_property_name].get("type")
                 if prop_type == "multi_select":
                     props[tag_property_name] = {"multi_select": [{"name": tag} for tag in tag_names]}
                 elif prop_type == "select":
-                    # 如果是单选，只取第一个标签
                     props[tag_property_name] = {"select": {"name": tag_names[0]}}
                 else:
-                    # 其他类型转为文本
                     props[tag_property_name] = {"rich_text": [{"text": {"content": ", ".join(tag_names[:3])}}]}
                 
                 log_info(f"提取到 {len(tag_names)} 个标签: {', '.join(tag_names[:5])}{'...' if len(tag_names) > 5 else ''}")
         
-        # 构建页面内容
         content = note.get("content") or ""
         children = []
         if content:
-            # 将内容分割为多个段落，确保每个段落不超过1990字符
             content_chunks = []
             chunk_size = 1990
             for i in range(0, len(content), chunk_size):
@@ -355,11 +332,10 @@ def notion_create_page(note, db_info):
 def main():
     """主函数"""
     log_info("=" * 50)
-    log_info("开始同步 get笔记 到 Notion（完整分页和标签同步）")
+    log_info("开始同步 get笔记 到 Notion（完整生产版）")
     log_info(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log_info("=" * 50)
     
-    # 验证所有必要的环境变量
     required_vars = {
         "GETBIJI_API_KEY": (GETBIJI_API_KEY, 10),
         "GETBIJI_CLIENT_ID": (GETBIJI_CLIENT_ID, 10),
@@ -379,14 +355,12 @@ def main():
         log_error(f"缺少必要的环境变量: {', '.join(missing_vars)}")
         sys.exit(1)
     
-    # 获取数据库结构
     db_info = get_notion_database_properties()
     if not db_info:
         log_error("无法获取数据库结构，同步终止")
         sys.exit(1)
     
     try:
-        # 获取所有 getbiji 笔记（支持分页）
         log_info("正在从 getbiji 获取所有笔记（分页获取）...")
         all_notes = get_all_notes()
         
@@ -396,20 +370,18 @@ def main():
         
         log_info(f"总共获取到 {len(all_notes)} 条笔记")
         
-        # 只同步前5条进行测试
-        test_notes = all_notes[:5]  # 测试用，先同步5条
+        # 同步所有笔记（已移除测试限制）
         synced = 0
         failed = 0
         skipped = 0
         
-        for i, note in enumerate(test_notes):
+        for i, note in enumerate(all_notes):  # 已修改：同步所有笔记
             try:
                 start_time = time.time()
                 note_id = note.get('id', 'unknown')
                 note_title = note.get('title', '无标题')[:50]
-                log_info(f"【开始处理】第 {i+1}/{len(test_notes)} 条笔记 (ID: {note_id}, 标题: {note_title}...)")
+                log_info(f"【开始处理】第 {i+1}/{len(all_notes)} 条笔记 (ID: {note_id}, 标题: {note_title}...)")
                 
-                # 检查是否已存在
                 existing_page_id = notion_query_by_noteid(str(note_id), db_info)
                 time.sleep(0.3)
                 
@@ -417,7 +389,6 @@ def main():
                     log_info(f"笔记已存在，跳过: {note_id}")
                     skipped += 1
                 else:
-                    # 创建新页面
                     log_info(f"创建新笔记: {note_id}")
                     if notion_create_page(note, db_info):
                         synced += 1
@@ -429,7 +400,6 @@ def main():
                 end_time = time.time()
                 log_info(f"【完成处理】第 {i+1} 条笔记，耗时: {end_time - start_time:.2f}秒")
                 
-                # 避免速率限制
                 time.sleep(0.5)
                 
             except Exception as e:
@@ -440,8 +410,7 @@ def main():
         
         log_info("=" * 50)
         log_info(f"同步完成!")
-        log_info(f"获取到: {len(all_notes)} 条笔记（总共）")
-        log_info(f"测试同步: {len(test_notes)} 条笔记")
+        log_info(f"总计: {len(all_notes)} 条笔记")
         log_info(f"成功创建: {synced} 条")
         log_info(f"已存在跳过: {skipped} 条")
         log_info(f"失败: {failed} 条")
