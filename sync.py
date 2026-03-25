@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-同步 Getbiji 笔记到 Notion 数据库 - 完整生产版
+同步 Getbiji 笔记到 Notion 数据库 - 完整生产版（支持原文链接）
 在 GitHub Actions 中运行
 """
 
@@ -221,6 +221,7 @@ def notion_create_page(note, db_info):
         
         props = {}
         
+        # 1. 标题属性
         title = note.get("title") or note.get("name") or "无标题"
         if not isinstance(title, str):
             title = str(title)
@@ -231,19 +232,22 @@ def notion_create_page(note, db_info):
             log_error(f"标题属性 '{title_property}' 不存在于数据库中")
             return None
         
+        # 2. NoteID 属性
         noteid = str(note.get("id") or note.get("note_id") or note.get("noteId") or "")
         if noteid and "NoteID" in properties:
             props["NoteID"] = {"rich_text": [{"text": {"content": noteid[:200]}}]}
         
+        # 3. 创建时间属性
         created = note.get("created_at") or note.get("createdAt") or note.get("created_time")
         if created and "CreatedAt" in properties:
             props["CreatedAt"] = {"date": {"start": created}}
         
+        # 4. 更新时间属性
         updated = note.get("updated_at") or note.get("updatedAt") or note.get("updated_time")
         if updated and "UpdatedAt" in properties:
             props["UpdatedAt"] = {"date": {"start": updated}}
         
-        # 标签处理
+        # 5. 标签属性
         tags = note.get("tags") or []
         tag_property_name = None
         for prop_name in ["Tags", "标签", "Tag", "categories"]:
@@ -277,6 +281,21 @@ def notion_create_page(note, db_info):
                 
                 log_info(f"提取到 {len(tag_names)} 个标签: {', '.join(tag_names[:5])}{'...' if len(tag_names) > 5 else ''}")
         
+        # 6. 原文链接属性（新增！）
+        source_url = note.get("url") or note.get("source_url") or note.get("link_url")
+        if source_url:
+            # 检查数据库中有无合适的属性
+            url_property_name = None
+            for prop_name in ["SourceURL", "原文链接", "URL", "Link"]:
+                if prop_name in properties:
+                    url_property_name = prop_name
+                    break
+            
+            if url_property_name:
+                props[url_property_name] = {"url": source_url}
+                log_info(f"原文链接: {source_url[:50]}...")
+        
+        # 构建页面内容
         content = note.get("content") or ""
         children = []
         if content:
@@ -332,7 +351,7 @@ def notion_create_page(note, db_info):
 def main():
     """主函数"""
     log_info("=" * 50)
-    log_info("开始同步 get笔记 到 Notion（完整生产版）")
+    log_info("开始同步 get笔记 到 Notion（完整生产版，支持原文链接）")
     log_info(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log_info("=" * 50)
     
@@ -370,12 +389,12 @@ def main():
         
         log_info(f"总共获取到 {len(all_notes)} 条笔记")
         
-        # 同步所有笔记（已移除测试限制）
+        # 同步所有笔记
         synced = 0
         failed = 0
         skipped = 0
         
-        for i, note in enumerate(all_notes):  # 已修改：同步所有笔记
+        for i, note in enumerate(all_notes):
             try:
                 start_time = time.time()
                 note_id = note.get('id', 'unknown')
