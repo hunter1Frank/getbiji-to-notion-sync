@@ -8,6 +8,7 @@ import os
 import time
 import requests
 import sys
+import traceback
 from datetime import datetime
 
 # 环境变量
@@ -143,8 +144,16 @@ def notion_update_page(page_id, props):
 
 def to_notion_props(note):
     """将 getbiji 笔记转换为 Notion 属性"""
+    # 确保标题是字符串
     title = note.get("title") or note.get("name") or note.get("summary") or "无标题"
-    noteid = str(note.get("id") or note.get("note_id") or note.get("noteId") or "")
+    if not isinstance(title, str):
+        title = str(title)
+    
+    # 确保noteid是字符串
+    noteid = note.get("id") or note.get("note_id") or note.get("noteId") or ""
+    if noteid is None:
+        noteid = ""
+    noteid = str(noteid)
     
     # 处理时间字段
     created = note.get("created_at") or note.get("createdAt") or note.get("created_time")
@@ -213,6 +222,7 @@ def main():
         # 获取 getbiji 笔记列表
         log_info("正在从 getbiji 获取笔记...")
         data = getbiji_request("GET", "/resource/note/list")
+        log_info(f"API 响应: {data}")
         
         # 提取笔记列表
         notes = data.get("data") or data.get("list") or data.get("notes") or []
@@ -223,12 +233,18 @@ def main():
         
         log_info(f"获取到 {len(notes)} 条笔记")
         
+        # 打印第一条笔记的结构用于调试
+        if notes:
+            log_info(f"第一条笔记结构: {notes[0]}")
+        
         # 同步前20条（避免限流）
         synced = 0
         for i, note in enumerate(notes[:20]):
             try:
                 start_time = time.time()
-                log_info(f"【开始处理】第 {i+1} 条笔记 (ID: {note.get('id', 'unknown')})")
+                note_id = note.get('id', 'unknown')
+                log_info(f"【开始处理】第 {i+1} 条笔记 (ID: {note_id})")
+                log_info(f"笔记数据: {note}")
                 
                 noteid, props = to_notion_props(note)
                 if not noteid:
@@ -258,6 +274,7 @@ def main():
                 
             except Exception as e:
                 log_error(f"处理第 {i+1} 条笔记失败: {str(e)}")
+                log_error(f"错误详情: {traceback.format_exc()}")
                 continue
         
         log_info("=" * 50)
@@ -267,6 +284,7 @@ def main():
         
     except Exception as e:
         log_error(f"同步过程失败: {str(e)}")
+        log_error(f"错误详情: {traceback.format_exc()}")
         sys.exit(1)
 
 if __name__ == "__main__":
