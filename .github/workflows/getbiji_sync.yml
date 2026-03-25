@@ -29,6 +29,11 @@ jobs:
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         run: python test_notion.py
       
+      - name: List Notion Databases
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        run: python list_databases.py
+        
       - name: Run sync
         env:
           GETBIJI_API_KEY: ${{ secrets.GETBIJI_API_KEY }}
