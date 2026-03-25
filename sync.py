@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-同步 Getbiji 笔记到 Notion 数据库 - 支持完整分页和标签同步
+同步 Getbiji 笔记到 Notion 数据库 - 完整功能版
 在 GitHub Actions 中运行
 """
 
@@ -84,9 +84,9 @@ def get_all_notes():
         log_info(f"正在获取第 {page_count} 页笔记，游标: {next_cursor}")
         
         try:
-            # 根据API文档[23](@ref)，使用 since_id 作为游标参数
+            # 使用正确的 API 路径：/resource/note/list
             params = {"since_id": next_cursor}
-            data = getbiji_request("GET", "/open/api/v1/resource/note/list", params=params)
+            data = getbiji_request("GET", "/resource/note/list", params=params)
             
             if not data or not isinstance(data, dict):
                 log_error(f"API响应格式异常: {type(data)}")
@@ -355,7 +355,7 @@ def notion_create_page(note, db_info):
 def main():
     """主函数"""
     log_info("=" * 50)
-    log_info("开始同步 get笔记 到 Notion（支持完整分页和标签同步）")
+    log_info("开始同步 get笔记 到 Notion（完整分页和标签同步）")
     log_info(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log_info("=" * 50)
     
@@ -396,17 +396,18 @@ def main():
         
         log_info(f"总共获取到 {len(all_notes)} 条笔记")
         
-        # 同步所有笔记
+        # 只同步前5条进行测试
+        test_notes = all_notes[:5]  # 测试用，先同步5条
         synced = 0
         failed = 0
         skipped = 0
         
-        for i, note in enumerate(all_notes):
+        for i, note in enumerate(test_notes):
             try:
                 start_time = time.time()
                 note_id = note.get('id', 'unknown')
                 note_title = note.get('title', '无标题')[:50]
-                log_info(f"【开始处理】第 {i+1}/{len(all_notes)} 条笔记 (ID: {note_id}, 标题: {note_title}...)")
+                log_info(f"【开始处理】第 {i+1}/{len(test_notes)} 条笔记 (ID: {note_id}, 标题: {note_title}...)")
                 
                 # 检查是否已存在
                 existing_page_id = notion_query_by_noteid(str(note_id), db_info)
@@ -439,7 +440,8 @@ def main():
         
         log_info("=" * 50)
         log_info(f"同步完成!")
-        log_info(f"总计: {len(all_notes)} 条笔记")
+        log_info(f"获取到: {len(all_notes)} 条笔记（总共）")
+        log_info(f"测试同步: {len(test_notes)} 条笔记")
         log_info(f"成功创建: {synced} 条")
         log_info(f"已存在跳过: {skipped} 条")
         log_info(f"失败: {failed} 条")
