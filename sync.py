@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-同步 Getbiji 笔记到 Notion 数据库
+同步 Getbiji 笔记到 Notion 数据库 - 支持标签同步
 在 GitHub Actions 中运行
 """
 
@@ -182,19 +182,40 @@ def notion_create_page(note, db_info):
         if updated and "UpdatedAt" in properties:
             props["UpdatedAt"] = {"date": {"start": updated}}
         
+        # 5. 标签属性（新增！）
+        tags = note.get("tags") or []
+        if tags and "Tags" in properties:  # 检查是否有Tags属性
+            tag_names = []
+            for tag in tags:
+                if isinstance(tag, dict) and "name" in tag:
+                    tag_name = tag["name"]
+                    if tag_name and tag_name not in tag_names:
+                        tag_names.append(tag_name)
+                elif isinstance(tag, str) and tag not in tag_names:
+                    tag_names.append(tag)
+            
+            if tag_names:
+                # 限制标签数量，避免Notion API限制
+                max_tags = 10
+                if len(tag_names) > max_tags:
+                    log_warning(f"笔记有 {len(tag_names)} 个标签，只取前 {max_tags} 个")
+                    tag_names = tag_names[:max_tags]
+                
+                props["Tags"] = {"multi_select": [{"name": tag} for tag in tag_names]}
+                log_info(f"提取到 {len(tag_names)} 个标签: {', '.join(tag_names[:5])}{'...' if len(tag_names) > 5 else ''}")
+        
         # 构建页面内容
         content = note.get("content") or ""
         children = []
         if content:
-            # 将内容分割为多个段落，确保每个段落不超过1990字符（留出安全余量）
-            # 因为中文字符等Unicode字符可能被计算为不同长度
+            # 将内容分割为多个段落，确保每个段落不超过1990字符
             content_chunks = []
-            chunk_size = 1990  # 比2000小一点，确保安全
+            chunk_size = 1990
             for i in range(0, len(content), chunk_size):
                 chunk = content[i:i+chunk_size]
                 content_chunks.append(chunk)
             
-            for chunk in content_chunks[:3]:  # 限制最多3个段落
+            for chunk in content_chunks[:3]:
                 children.append({
                     "object": "block",
                     "type": "paragraph",
@@ -217,7 +238,6 @@ def notion_create_page(note, db_info):
         
         log_info(f"创建 Notion 页面: {title[:50]}...")
         log_info(f"使用的属性: {list(props.keys())}")
-        log_info(f"内容分割为 {len(children)} 个段落，每个不超过1990字符")
         
         response = requests.post(url, headers=notion_headers(), json=payload, timeout=30)
         
@@ -241,7 +261,7 @@ def notion_create_page(note, db_info):
 def main():
     """主函数"""
     log_info("=" * 50)
-    log_info("开始同步 get笔记 到 Notion")
+    log_info("开始同步 get笔记 到 Notion（支持标签同步）")
     log_info(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log_info("=" * 50)
     
