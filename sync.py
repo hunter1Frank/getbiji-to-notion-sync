@@ -16,7 +16,10 @@ runs-on: ubuntu-latest
 
 steps:
 
-- uses: actions/checkout@v4
+- name: Checkout
+    
+    uses: actions/checkout@v4
+    
 - name: Set up Python
     
     uses: actions/setup-python@v5
