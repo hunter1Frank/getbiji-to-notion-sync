@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-同步 Getbiji 笔记到 Notion 数据库 - 支持标签同步
+同步 Getbiji 笔记到 Notion 数据库 - 支持完整分页和标签同步
 在 GitHub Actions 中运行
 """
 
@@ -72,6 +72,90 @@ def getbiji_request(method, path, params=None, json=None, max_retries=3):
                 raise
     
     raise RuntimeError(f"Getbiji API 调用失败")
+
+def get_all_notes():
+    """获取所有笔记，支持分页"""
+    all_notes = []
+    page = 1
+    page_size = 50  # 每页获取50条，减少请求次数
+    
+    while True:
+        try:
+            log_info(f"正在获取第 {page} 页笔记，每页 {page_size} 条...")
+            
+            # 尝试不同的分页参数组合
+            params = {
+                "page": page,
+                "page_size": page_size,
+                "since_id": 0
+            }
+            
+            data = getbiji_request("GET", "/resource/note/list", params=params)
+            
+            # 解析响应数据
+            notes_batch = []
+            
+            # 尝试多种可能的响应结构
+            if isinstance(data, dict):
+                # 结构1: data.data.notes
+                if "data" in data and isinstance(data["data"], dict):
+                    if "notes" in data["data"]:
+                        notes_batch = data["data"]["notes"]
+                    elif "list" in data["data"]:
+                        notes_batch = data["data"]["list"]
+                    elif "items" in data["data"]:
+                        notes_batch = data["data"]["items"]
+                # 结构2: data.notes
+                elif "notes" in data:
+                    notes_batch = data["notes"]
+                elif "list" in data:
+                    notes_batch = data["list"]
+                elif "items" in data:
+                    notes_batch = data["items"]
+                # 结构3: 直接是数组
+                elif isinstance(data.get("data"), list):
+                    notes_batch = data["data"]
+            
+            # 如果没有找到笔记，尝试直接使用响应
+            if not notes_batch and isinstance(data, list):
+                notes_batch = data
+            
+            if not notes_batch:
+                log_warning(f"第 {page} 页没有找到笔记数据")
+                break
+            
+            log_info(f"第 {page} 页获取到 {len(notes_batch)} 条笔记")
+            all_notes.extend(notes_batch)
+            
+            # 检查是否还有更多数据
+            # 如果获取的数量小于请求的page_size，说明是最后一页
+            if len(notes_batch) < page_size:
+                log_info(f"获取到 {len(notes_batch)} 条笔记，小于请求的 {page_size} 条，可能是最后一页")
+                break
+            
+            # 检查响应中是否有分页指示器
+            if isinstance(data, dict):
+                if "has_more" in data and not data["has_more"]:
+                    log_info("API 返回 has_more: false，没有更多数据")
+                    break
+                if "next_cursor" in data and not data["next_cursor"]:
+                    log_info("API 返回 next_cursor 为空，没有更多数据")
+                    break
+                if "total" in data and len(all_notes) >= data["total"]:
+                    log_info(f"已获取 {len(all_notes)} 条笔记，达到总数 {data['total']}")
+                    break
+            
+            # 增加页码，继续获取下一页
+            page += 1
+            
+            # 避免请求过于频繁
+            time.sleep(0.5)
+            
+        except Exception as e:
+            log_error(f"获取第 {page} 页笔记失败: {str(e)}")
+            break
+    
+    return all_notes
 
 def notion_headers():
     return {
@@ -147,6 +231,48 @@ def notion_query_by_noteid(noteid, db_info):
         log_error(f"查询 Notion 异常: {str(e)}")
         return None
 
+def extract_tags(note):
+    """从笔记数据中提取标签"""
+    tags = []
+    
+    # 尝试多种可能的标签数据结构
+    if isinstance(note, dict):
+        # 结构1: 直接有tags字段
+        if "tags" in note and isinstance(note["tags"], list):
+            for tag in note["tags"]:
+                if isinstance(tag, dict) and "name" in tag:
+                    tag_name = tag["name"]
+                    if tag_name and tag_name not in tags:
+                        tags.append(tag_name)
+                elif isinstance(tag, str) and tag not in tags:
+                    tags.append(tag)
+        
+        # 结构2: 在metadata中
+        elif "metadata" in note and isinstance(note["metadata"], dict):
+            if "tags" in note["metadata"] and isinstance(note["metadata"]["tags"], list):
+                for tag in note["metadata"]["tags"]:
+                    if isinstance(tag, dict) and "name" in tag:
+                        tag_name = tag["name"]
+                        if tag_name and tag_name not in tags:
+                            tags.append(tag_name)
+                    elif isinstance(tag, str) and tag not in tags:
+                        tags.append(tag)
+        
+        # 结构3: 在properties中
+        elif "properties" in note and isinstance(note["properties"], dict):
+            if "tags" in note["properties"]:
+                tags_data = note["properties"]["tags"]
+                if isinstance(tags_data, list):
+                    for tag in tags_data:
+                        if isinstance(tag, dict) and "name" in tag:
+                            tag_name = tag["name"]
+                            if tag_name and tag_name not in tags:
+                                tags.append(tag_name)
+                        elif isinstance(tag, str) and tag not in tags:
+                            tags.append(tag)
+    
+    return tags
+
 def notion_create_page(note, db_info):
     """在 Notion 中创建新页面"""
     try:
@@ -182,30 +308,32 @@ def notion_create_page(note, db_info):
         if updated and "UpdatedAt" in properties:
             props["UpdatedAt"] = {"date": {"start": updated}}
         
-        # 5. 标签属性（新增！）
-        tags = note.get("tags") or []
-        if tags and "Tags" in properties:  # 检查是否有Tags属性
-            tag_names = []
-            for tag in tags:
-                if isinstance(tag, dict) and "name" in tag:
-                    tag_name = tag["name"]
-                    if tag_name and tag_name not in tag_names:
-                        tag_names.append(tag_name)
-                elif isinstance(tag, str) and tag not in tag_names:
-                    tag_names.append(tag)
+        # 5. 标签属性 - 使用提取函数
+        tags = extract_tags(note)
+        if tags:
+            # 尝试多种可能的标签属性名
+            tag_property_names = ["Tags", "标签", "Tag", "分类", "Categories"]
+            tag_property_found = None
             
-            if tag_names:
+            for prop_name in tag_property_names:
+                if prop_name in properties:
+                    tag_property_found = prop_name
+                    break
+            
+            if tag_property_found:
                 # 限制标签数量，避免Notion API限制
                 max_tags = 10
-                if len(tag_names) > max_tags:
-                    log_warning(f"笔记有 {len(tag_names)} 个标签，只取前 {max_tags} 个")
-                    tag_names = tag_names[:max_tags]
+                if len(tags) > max_tags:
+                    log_warning(f"笔记有 {len(tags)} 个标签，只取前 {max_tags} 个")
+                    tags = tags[:max_tags]
                 
-                props["Tags"] = {"multi_select": [{"name": tag} for tag in tag_names]}
-                log_info(f"提取到 {len(tag_names)} 个标签: {', '.join(tag_names[:5])}{'...' if len(tag_names) > 5 else ''}")
+                props[tag_property_found] = {"multi_select": [{"name": tag} for tag in tags]}
+                log_info(f"提取到 {len(tags)} 个标签: {', '.join(tags[:5])}{'...' if len(tags) > 5 else ''}")
+            else:
+                log_warning(f"未找到标签属性，可用属性名: {list(properties.keys())}")
         
         # 构建页面内容
-        content = note.get("content") or ""
+        content = note.get("content") or note.get("body") or ""
         children = []
         if content:
             # 将内容分割为多个段落，确保每个段落不超过1990字符
@@ -261,7 +389,7 @@ def notion_create_page(note, db_info):
 def main():
     """主函数"""
     log_info("=" * 50)
-    log_info("开始同步 get笔记 到 Notion（支持标签同步）")
+    log_info("开始同步 get笔记 到 Notion（支持完整分页和标签同步）")
     log_info(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log_info("=" * 50)
     
@@ -292,34 +420,15 @@ def main():
         sys.exit(1)
     
     try:
-        # 获取 getbiji 笔记列表
-        log_info("正在从 getbiji 获取笔记...")
-        
-        # 根据官方文档，使用 since_id=0 获取所有笔记
-        params = {"since_id": 0}
-        data = getbiji_request("GET", "/resource/note/list", params=params)
-        
-        # 检查API响应数据结构
-        if not data or not isinstance(data, dict):
-            log_error(f"API响应格式异常: {type(data)}")
-            sys.exit(1)
-        
-        # 从返回的数据结构中提取笔记
-        notes = []
-        if "data" in data and isinstance(data["data"], dict):
-            if "notes" in data["data"]:
-                notes = data["data"]["notes"]
-                log_info(f"从 getbiji API 获取到 {len(notes)} 条笔记")
-            else:
-                log_warning(f"data['data'] 中没有 notes 键，尝试其他键")
-        else:
-            # 尝试其他可能的键
-            notes = data.get("data") or data.get("list") or data.get("notes") or []
-            log_info(f"从其他键找到 {len(notes)} 条笔记")
+        # 获取所有笔记（支持分页）
+        log_info("正在从 getbiji 获取所有笔记（支持分页）...")
+        notes = get_all_notes()
         
         if not isinstance(notes, list):
             log_error(f"笔记数据不是列表类型: {type(notes)}")
             sys.exit(1)
+        
+        log_info(f"总共获取到 {len(notes)} 条笔记")
         
         if not notes:
             log_warning("未获取到任何笔记")
