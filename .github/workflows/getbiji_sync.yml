@@ -23,6 +23,12 @@ jobs:
       - name: Install dependencies
         run: pip install requests
         
+      - name: Test Notion Connection
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        run: python test_notion.py
+      
       - name: Run sync
         env:
           GETBIJI_API_KEY: ${{ secrets.GETBIJI_API_KEY }}
