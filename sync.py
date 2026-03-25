@@ -14,7 +14,7 @@ from datetime import datetime
 # 环境变量
 GETBIJI_API_KEY = os.environ.get("GETBIJI_API_KEY", "").strip()
 GETBIJI_CLIENT_ID = os.environ.get("GETBIJI_CLIENT_ID", "").strip()
-GETBIJI_BASE_URL = os.environ.get("GETBIJI_BASE_URL", "").rstrip("/")
+GETBIJI_BASE_URL = os.environ.get("GETBIJI_BASE_URL", "").strip()
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "").strip()
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "").strip()
 
@@ -26,14 +26,50 @@ def log_error(message):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ERROR: {message}", file=sys.stderr)
 
 def log_warning(message):
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] WARNING: {message}")
+    print(f"[{datetime.now().strftime('%Y-%m-d %H:%M:%S')}] WARNING: {message}")
+
+def validate_getbiji_config():
+    """验证 getbiji 配置"""
+    if not GETBIJI_BASE_URL:
+        log_error("GETBIJI_BASE_URL 未设置")
+        return False
+    
+    # 确保 Base URL 以正确的格式结尾
+    if not GETBIJI_BASE_URL.startswith('http'):
+        log_error(f"GETBIJI_BASE_URL 格式错误，应该以 http 开头: {GETBIJI_BASE_URL}")
+        return False
+    
+    if not GETBIJI_BASE_URL.endswith('/open/api/v1'):
+        # 尝试修正 Base URL
+        if GETBIJI_BASE_URL.endswith('/open/api'):
+            corrected_url = GETBIJI_BASE_URL + '/v1'
+        elif GETBIJI_BASE_URL.endswith('/open/'):
+            corrected_url = GETBIJI_BASE_URL.rstrip('/') + '/api/v1'
+        elif GETBIJI_BASE_URL.endswith('/open'):
+            corrected_url = GETBIJI_BASE_URL + '/api/v1'
+        else:
+            corrected_url = GETBIJI_BASE_URL.rstrip('/') + '/open/api/v1'
+        
+        log_warning(f"GETBIJI_BASE_URL 可能需要修正: {GETBIJI_BASE_URL}")
+        log_warning(f"建议使用: {corrected_url}")
+    
+    return True
 
 def getbiji_request(method, path, params=None, json=None, max_retries=3):
     """调用 getbiji API，支持重试"""
+    # 验证配置
+    if not validate_getbiji_config():
+        raise RuntimeError("getbiji 配置验证失败")
+    
+    # 确保 path 以 / 开头
     if path and not path.startswith("/"):
         path = "/" + path
     
-    url = f"{GETBIJI_BASE_URL}{path}"
+    # 清理 Base URL
+    base_url = GETBIJI_BASE_URL.rstrip("/")
+    
+    # 构建完整的 URL
+    url = f"{base_url}{path}"
     log_info(f"请求 getbiji: {method} {url}")
     
     headers = {
@@ -242,7 +278,7 @@ def main():
     required_vars = {
         "GETBIJI_API_KEY": (GETBIJI_API_KEY, 10),
         "GETBIJI_CLIENT_ID": (GETBIJI_CLIENT_ID, 10),
-        "GETBIJI_BASE_URL": (GETBIJI_BASE_URL, 30),
+        "GETBIJI_BASE_URL": (GETBIJI_BASE_URL, 50),  # 显示更多字符
         "NOTION_TOKEN": (NOTION_TOKEN, 10),
         "NOTION_DATABASE_ID": (NOTION_DATABASE_ID, 8)
     }
@@ -256,6 +292,11 @@ def main():
     
     if missing_vars:
         log_error(f"缺少必要的环境变量: {', '.join(missing_vars)}")
+        sys.exit(1)
+    
+    # 验证 getbiji 配置
+    if not validate_getbiji_config():
+        log_error("getbiji 配置验证失败，同步终止")
         sys.exit(1)
     
     # 获取数据库结构
@@ -345,7 +386,7 @@ def main():
         log_info(f"成功创建: {synced} 条")
         log_info(f"已存在跳过: {skipped} 条")
         log_info(f"失败: {failed} 条")
-        log_info(f"结束时间: {datetime.now().strftime('%Y-%m-d %H:%M:%S')}")
+        log_info(f"结束时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         log_info("=" * 50)
         
         if synced == 0 and failed > 0:
