@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-同步 Getbiji 笔记到 Notion 数据库
+同步 Getbiji 笔记到 Notion 数据库 - 完整版
 在 GitHub Actions 中运行
 """
 
@@ -97,7 +97,7 @@ def get_notion_database_properties():
                     title_property = prop_name
                     break
             
-            log_info(f"数据库标题: {title_property or '未找到'}")
+            log_info(f"数据库标题属性: {title_property or '未找到'}")
             log_info(f"数据库所有属性: {list(properties.keys())}")
             
             return {
@@ -151,7 +151,7 @@ def notion_create_page(note, db_info):
     """在 Notion 中创建新页面"""
     try:
         properties = db_info.get("properties", {})
-        title_property = db_info.get("title_property", "名称")  # 默认使用"名称"
+        title_property = db_info.get("title_property", "名称")
         
         # 准备属性
         props = {}
@@ -188,7 +188,7 @@ def notion_create_page(note, db_info):
         if content:
             # 将内容分割为多个段落
             content_chunks = [content[i:i+2000] for i in range(0, min(len(content), 6000), 2000)]
-            for chunk in content_chunks[:3]:  # 限制最多3个段落
+            for chunk in content_chunks[:3]:
                 children.append({
                     "object": "block",
                     "type": "paragraph",
@@ -282,7 +282,7 @@ def main():
         if "data" in data and isinstance(data["data"], dict):
             if "notes" in data["data"]:
                 notes = data["data"]["notes"]
-                log_info(f"从 data['data']['notes'] 找到 {len(notes)} 条笔记")
+                log_info(f"从 getbiji API 获取到 {len(notes)} 条笔记")
             else:
                 log_warning(f"data['data'] 中没有 notes 键，尝试其他键")
         else:
@@ -298,17 +298,17 @@ def main():
             log_warning("未获取到任何笔记")
             sys.exit(0)
         
-        log_info(f"获取到 {len(notes)} 条笔记")
-        
-        # 只同步前2条进行测试
+        # 同步所有笔记
         synced = 0
         failed = 0
-        for i, note in enumerate(notes[:2]):
+        skipped = 0
+        
+        for i, note in enumerate(notes):
             try:
                 start_time = time.time()
                 note_id = note.get('id', 'unknown')
                 note_title = note.get('title', '无标题')[:50]
-                log_info(f"【开始处理】第 {i+1} 条笔记 (ID: {note_id}, 标题: {note_title}...)")
+                log_info(f"【开始处理】第 {i+1}/{len(notes)} 条笔记 (ID: {note_id}, 标题: {note_title}...)")
                 
                 # 检查是否已存在
                 existing_page_id = notion_query_by_noteid(str(note_id), db_info)
@@ -316,7 +316,7 @@ def main():
                 
                 if existing_page_id:
                     log_info(f"笔记已存在，跳过: {note_id}")
-                    synced += 1
+                    skipped += 1
                 else:
                     # 创建新页面
                     log_info(f"创建新笔记: {note_id}")
@@ -341,12 +341,15 @@ def main():
         
         log_info("=" * 50)
         log_info(f"同步完成!")
-        log_info(f"成功: {synced} 条，失败: {failed} 条，总计: {len(notes[:2])} 条")
-        log_info(f"结束时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        log_info(f"总计: {len(notes)} 条笔记")
+        log_info(f"成功创建: {synced} 条")
+        log_info(f"已存在跳过: {skipped} 条")
+        log_info(f"失败: {failed} 条")
+        log_info(f"结束时间: {datetime.now().strftime('%Y-%m-d %H:%M:%S')}")
         log_info("=" * 50)
         
-        if synced == 0:
-            log_error("没有成功同步任何笔记")
+        if synced == 0 and failed > 0:
+            log_error("没有成功同步任何新笔记")
             sys.exit(1)
         
     except Exception as e:
